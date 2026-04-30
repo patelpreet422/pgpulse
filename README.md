@@ -87,10 +87,10 @@ jobs, err := client.InsertBatch(ctx, []pgpulse.InsertParams{
 
 ## Schema
 
-PgPulse stores jobs in a single `pgpulse_jobs` table. Run the embedded migration or apply `migrate/schema.sql` manually:
+PgPulse stores jobs in a single `pgpulse_jobs` table. Run the embedded migration or apply `pgpulse/schema.sql` manually:
 
 ```bash
-psql -f migrate/schema.sql mydb
+psql -f pgpulse/schema.sql mydb
 ```
 
 ## Configuration
