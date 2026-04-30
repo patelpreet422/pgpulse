@@ -1,4 +1,0 @@
-com/pgpulse/PgPulseApplication.class
-com/pgpulse/model/Job.class
-com/pgpulse/repository/JobQueueRepository.class
-com/pgpulse/worker/WorkerManager.class

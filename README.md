@@ -62,7 +62,7 @@ The schema is created automatically on startup via `spring.sql.init.mode=always`
 |---|---|---|
 | `spring.datasource.hikari.maximum-pool-size` | `20` | Max DB connections |
 | `spring.datasource.hikari.minimum-idle` | `5` | Min idle connections |
-| Worker threads | `10` | Concurrent polling goroutines |
+| Worker threads | `10` | Concurrent worker threads |
 | Lease duration | `5 min` | `locked_until` extension per heartbeat |
 | Max retries | `3` | Attempts before marking failed |
 | Idle poll delay | `1 s` | Sleep when queue is empty |
