@@ -6,6 +6,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.concurrent.ExecutorService;
@@ -22,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * and locks are never held across the entire processing loop.
  */
 @Service
+@ConditionalOnProperty(name = "pgpulse.worker.enabled", havingValue = "true", matchIfMissing = true)
 public class WorkerManager {
 
     private static final Logger log = LoggerFactory.getLogger(WorkerManager.class);
