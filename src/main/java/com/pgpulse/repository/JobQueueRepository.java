@@ -1,11 +1,22 @@
 package com.pgpulse.repository;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.pgpulse.dto.JobResponse;
+import com.pgpulse.event.JobEventBus;
+import com.pgpulse.event.JobStatusEvent;
 import com.pgpulse.model.Job;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -24,9 +35,13 @@ public class JobQueueRepository {
     private static final int MAX_RETRIES = 3;
 
     private final JdbcTemplate jdbc;
+    private final ObjectMapper objectMapper;
+    private final JobEventBus eventBus;
 
-    public JobQueueRepository(JdbcTemplate jdbc) {
+    public JobQueueRepository(JdbcTemplate jdbc, ObjectMapper objectMapper, JobEventBus eventBus) {
         this.jdbc = jdbc;
+        this.objectMapper = objectMapper;
+        this.eventBus = eventBus;
     }
 
     // ------------------------------------------------------------------ enqueue
@@ -98,6 +113,8 @@ public class JobQueueRepository {
         }
 
         log.debug("Dequeued job {} (attempt {})", job.id(), job.retries());
+        eventBus.publish(job.id(), "status",
+                new JobStatusEvent(job.id(), "processing", parseJson(job.checkpointData()), Instant.now()));
         return Optional.of(job);
     }
 
@@ -119,6 +136,8 @@ public class JobQueueRepository {
                 checkpointJson, jobId
         );
         log.debug("Heartbeat for job {}: {}", jobId, checkpointJson);
+        eventBus.publish(jobId, "progress",
+                new JobStatusEvent(jobId, "processing", parseJson(checkpointJson), Instant.now()));
     }
 
     // --------------------------------------------------------------- completion
@@ -138,6 +157,9 @@ public class JobQueueRepository {
                 jobId
         );
         log.info("Job {} completed", jobId);
+        eventBus.publish(jobId, "status",
+                new JobStatusEvent(jobId, "completed", null, Instant.now()));
+        eventBus.complete(jobId);
     }
 
     /**
@@ -160,5 +182,111 @@ public class JobQueueRepository {
                 error, jobId
         );
         log.warn("Job {} marked as failed: {}", jobId, error);
+        eventBus.publish(jobId, "status",
+                new JobStatusEvent(jobId, "failed",
+                        objectMapper.createObjectNode().put("error", error), Instant.now()));
+        eventBus.complete(jobId);
+    }
+
+    // ----------------------------------------------------------- API queries
+
+    /**
+     * Insert a new job and return its full representation.
+     */
+    public JobResponse enqueueReturning(String payload) {
+        var rows = jdbc.query(
+                """
+                INSERT INTO batch_jobs (payload) VALUES (?::jsonb)
+                RETURNING id, payload, status, retries, checkpoint_data, created_at, updated_at
+                """,
+                (rs, rowNum) -> mapToJobResponse(rs),
+                payload
+        );
+        log.info("Enqueued job {} with payload: {}", rows.get(0).id(), payload);
+        eventBus.publish(rows.get(0).id(), "status",
+                new JobStatusEvent(rows.get(0).id(), "queued", null, Instant.now()));
+        return rows.get(0);
+    }
+
+    /**
+     * Fetch a single job by its ID.
+     */
+    public Optional<JobResponse> findById(Long id) {
+        var rows = jdbc.query(
+                "SELECT * FROM batch_jobs WHERE id = ?",
+                (rs, rowNum) -> mapToJobResponse(rs),
+                id
+        );
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+    }
+
+    /**
+     * List jobs with optional status filter, ordered newest-first.
+     */
+    public List<JobResponse> findAll(String status, int offset, int limit) {
+        if (status != null) {
+            return jdbc.query(
+                    "SELECT * FROM batch_jobs WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (rs, rowNum) -> mapToJobResponse(rs),
+                    status, limit, offset
+            );
+        }
+        return jdbc.query(
+                "SELECT * FROM batch_jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (rs, rowNum) -> mapToJobResponse(rs),
+                limit, offset
+        );
+    }
+
+    /**
+     * Count jobs, optionally filtered by status.
+     */
+    public long count(String status) {
+        Long result;
+        if (status != null) {
+            result = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM batch_jobs WHERE status = ?", Long.class, status);
+        } else {
+            result = jdbc.queryForObject("SELECT COUNT(*) FROM batch_jobs", Long.class);
+        }
+        return result != null ? result : 0;
+    }
+
+    /**
+     * Aggregate job counts grouped by status.
+     */
+    public Map<String, Long> countByStatus() {
+        var rows = jdbc.queryForList(
+                "SELECT status, COUNT(*) AS count FROM batch_jobs GROUP BY status ORDER BY status");
+        Map<String, Long> stats = new LinkedHashMap<>();
+        for (var row : rows) {
+            stats.put((String) row.get("status"), (Long) row.get("count"));
+        }
+        return stats;
+    }
+
+    private JobResponse mapToJobResponse(ResultSet rs) throws SQLException {
+        try {
+            String checkpointStr = rs.getString("checkpoint_data");
+            return new JobResponse(
+                    rs.getLong("id"),
+                    objectMapper.readTree(rs.getString("payload")),
+                    rs.getString("status"),
+                    rs.getInt("retries"),
+                    checkpointStr != null ? objectMapper.readTree(checkpointStr) : objectMapper.createObjectNode(),
+                    rs.getTimestamp("created_at").toInstant(),
+                    rs.getTimestamp("updated_at").toInstant()
+            );
+        } catch (JsonProcessingException e) {
+            throw new SQLException("Failed to parse JSON column", e);
+        }
+    }
+
+    private com.fasterxml.jackson.databind.JsonNode parseJson(String json) {
+        try {
+            return json != null ? objectMapper.readTree(json) : objectMapper.createObjectNode();
+        } catch (JsonProcessingException e) {
+            return objectMapper.createObjectNode();
+        }
     }
 }
